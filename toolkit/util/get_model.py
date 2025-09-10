@@ -8,23 +8,13 @@ import importlib
 import pkgutil
 
 from toolkit.models.wan21 import Wan21, Wan21I2V
-
-# Conditionally import CogView4 to avoid compatibility issues
-try:
-    from toolkit.models.cogview4 import CogView4
-    COGVIEW4_AVAILABLE = True
-except ImportError:
-    CogView4 = None
-    COGVIEW4_AVAILABLE = False
-    print("Warning: CogView4 not available due to compatibility issues")
+from toolkit.models.cogview4 import CogView4
 
 BUILT_IN_MODELS = [
     Wan21,
     Wan21I2V,
+    CogView4,
 ]
-
-if COGVIEW4_AVAILABLE:
-    BUILT_IN_MODELS.append(CogView4)
 
 
 def get_all_models() -> List[BaseModel]:

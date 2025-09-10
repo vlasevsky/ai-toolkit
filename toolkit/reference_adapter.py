@@ -30,7 +30,12 @@ from transformers import (
 )
 from toolkit.models.size_agnostic_feature_encoder import SAFEImageProcessor, SAFEVisionModel
 
-from transformers import ViTHybridImageProcessor, ViTHybridForImageClassification
+try:
+    from transformers import ViTHybridImageProcessor, ViTHybridForImageClassification
+except ImportError:
+    # ViTHybrid классы удалены в transformers 4.52.4+, используем обычные ViT
+    from transformers import ViTImageProcessor as ViTHybridImageProcessor
+    from transformers import ViTForImageClassification as ViTHybridForImageClassification
 
 from transformers import ViTFeatureExtractor, ViTForImageClassification
 
