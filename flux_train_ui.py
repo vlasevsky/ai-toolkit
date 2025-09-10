@@ -100,37 +100,106 @@ def run_captioning(images, concept_sentence, *captions):
     #Load internally to not consume resources for training
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16
-    model = AutoModelForCausalLM.from_pretrained(
-        "multimodalart/Florence-2-large-no-flash-attn", torch_dtype=torch_dtype, trust_remote_code=True
-    ).to(device)
-    processor = AutoProcessor.from_pretrained("multimodalart/Florence-2-large-no-flash-attn", trust_remote_code=True)
+    
+    try:
+        # Пробуем несколько вариантов Florence-2 модели
+        model_options = [
+            "microsoft/Florence-2-large",  # Официальная модель
+            "multimodalart/Florence-2-large-no-flash-attn",  # Исходная модель
+            "microsoft/Florence-2-base"  # Базовая версия как fallback
+        ]
+        
+        model = None
+        processor = None
+        
+        for model_name in model_options:
+            try:
+                print(f"Trying to load {model_name}...")
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name, 
+                    torch_dtype=torch_dtype, 
+                    trust_remote_code=True,
+                    device_map="auto" if device == "cuda" else None,
+                    attn_implementation="eager",  # Избегаем flash attention проблемы
+                    low_cpu_mem_usage=True
+                ).to(device)
+                processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+                print(f"Successfully loaded {model_name}")
+                break
+            except Exception as e:
+                print(f"Failed to load {model_name}: {e}")
+                continue
+        
+        if model is None or processor is None:
+            raise Exception("All Florence-2 model variants failed to load")
+            
+    except Exception as e:
+        print(f"Error loading Florence-2 model: {e}")
+        print("Falling back to alternative captioning method...")
+        # Fallback: используем concept_sentence для всех изображений
+        captions = list(captions)
+        for i, image_path in enumerate(images):
+            if i < len(captions):
+                # Создаем базовую подпись на основе concept_sentence
+                if concept_sentence:
+                    captions[i] = f"A photo of {concept_sentence}" if not captions[i] else captions[i]
+                elif not captions[i]:
+                    captions[i] = "A photo"
+            yield captions
+        return
 
     captions = list(captions)
     for i, image_path in enumerate(images):
         print(captions[i])
-        if isinstance(image_path, str):  # If image is a file path
-            image = Image.open(image_path).convert("RGB")
+        try:
+            if isinstance(image_path, str):  # If image is a file path
+                image = Image.open(image_path).convert("RGB")
 
-        prompt = "<DETAILED_CAPTION>"
-        inputs = processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
+            prompt = "<DETAILED_CAPTION>"
+            inputs = processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
 
-        generated_ids = model.generate(
-            input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"], max_new_tokens=1024, num_beams=3
-        )
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"], max_new_tokens=1024, num_beams=3
+            )
 
-        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        parsed_answer = processor.post_process_generation(
-            generated_text, task=prompt, image_size=(image.width, image.height)
-        )
-        caption_text = parsed_answer["<DETAILED_CAPTION>"].replace("The image shows ", "")
-        if concept_sentence:
-            caption_text = f"{caption_text} [trigger]"
-        captions[i] = caption_text
+            generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+            parsed_answer = processor.post_process_generation(
+                generated_text, task=prompt, image_size=(image.width, image.height)
+            )
+            
+            # Безопасное извлечение подписи
+            if "<DETAILED_CAPTION>" in parsed_answer:
+                caption_text = parsed_answer["<DETAILED_CAPTION>"].replace("The image shows ", "")
+            else:
+                # Fallback если парсинг не удался
+                caption_text = generated_text.split("DETAILED_CAPTION>")[-1].split("<")[0].strip()
+            
+            # Добавляем триггер если указан
+            if concept_sentence and "[trigger]" not in caption_text:
+                caption_text = f"{caption_text} [trigger]"
+                
+            captions[i] = caption_text
+        except Exception as e:
+            print(f"Error processing image {i+1}: {e}")
+            # Умный fallback на основе concept_sentence
+            if concept_sentence:
+                # Создаем более осмысленную подпись
+                base_caption = f"A photo showing {concept_sentence}"
+                captions[i] = f"{base_caption} [trigger]"
+            elif not captions[i] or captions[i] == "[trigger]":
+                captions[i] = "A detailed photo"
+            # Если уже есть подпись, оставляем её без изменений
 
         yield captions
-    model.to("cpu")
-    del model
-    del processor
+    
+    # Безопасная очистка памяти
+    try:
+        model.to("cpu")
+        del model
+        del processor
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    except:
+        pass
 
 def recursive_update(d, u):
     for k, v in u.items():
